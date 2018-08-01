@@ -1,13 +1,11 @@
-import autograd
 import autograd.numpy as np
-from autograd import value_and_grad, elementwise_grad as egrad
-from sklearn.base import BaseEstimator, RegressorMixin
+import matplotlib.pyplot as plt
+from autograd import elementwise_grad as egrad
+from scipy.linalg import solve_triangular
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import (ConstantKernel as C,
                                               RBF, WhiteKernel)
 
-from scipy.linalg import cholesky, cho_solve, solve_triangular
-import matplotlib.pyplot as plt
 
 class GPAutoGrad(object):
     """GPAutoGrad implements a GP Regression algorithm which utilizes
@@ -80,7 +78,7 @@ class GPAutoGrad(object):
             grad_var = egrad(sigma)
             return grad_var(X)
         else:
-            auto_grad = egrad(egrad(sigma))
+            grad_var = egrad(egrad(sigma))
             return grad_var(X)
 
     @staticmethod
@@ -94,6 +92,7 @@ class GPAutoGrad(object):
 
 def np_gradient(y_pred, xt, n_points=1000):
     return np.gradient(y_pred.squeeze(), xt.squeeze(), edge_order=2)[:, np.newaxis]
+
 
 def sample_data():
     """Gets some sample data."""
@@ -114,12 +113,10 @@ def sample_data():
     ytrain = f(xtrain) + noise_std * rng.randn(n_train, 1)
     ytest = f(xtest)
 
-
     return xtrain, xtest, ytrain, ytest
 
 
 def main():
-
     # Get sample data
     xtrain, xtest, ytrain, ytest = sample_data()
 
@@ -128,7 +125,6 @@ def main():
     signal_variance = 1.0
     length_scale = 1.0
     noise_likelihood = 0.01
-
 
     # Kernel Parameters
     gp_kernel = C(signal_variance) \
@@ -171,7 +167,7 @@ def main():
 
     ax.legend()
     plt.show()
-    
+
     ############################
     # 2nd Derivative
     ############################
@@ -193,11 +189,8 @@ def main():
 
     plt.show()
 
-
-
-
-
     return None
+
 
 if __name__ == '__main__':
     main()
