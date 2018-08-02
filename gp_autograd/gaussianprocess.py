@@ -4,7 +4,7 @@ from autograd import elementwise_grad as egrad, value_and_grad
 from scipy.linalg import solve_triangular
 from scipy.optimize import minimize
 from sklearn.base import BaseEstimator, RegressorMixin
-
+from operator import itemgetter
 from data import example_1d
 
 
@@ -149,20 +149,32 @@ class GaussianProcess(BaseEstimator, RegressorMixin):
         # Construct the autogradient function for the
         # predictive mean
         mu = lambda x: self.predict(x)
+        grad_mu = egrad(mu)
 
-        if nder == 1:
-            grad_mu = egrad(mu)
+        mu_sol = X
 
-            if not return_std:
-                return grad_mu(X)
-            else:
-                return grad_mu(X), self.sigma_grad(X, nder=1)
+        while nder:
+            mu_sol = grad_mu(mu_sol)
+            nder -= 1
+
+        if return_std:
+            return mu_sol, self.sigma_grad(X, nder=nder)
         else:
-            grad_mu = egrad(egrad(mu))
-            if not return_std:
-                return grad_mu(X)
-            else:
-                return grad_mu(X), self.sigma_grad(X, nder=2)
+            return mu_sol
+
+
+
+
+        # if not return_std:
+        #     return grad_mu(X)
+        # else:
+        #     return grad_mu(X), self.sigma_grad(X, nder=1)
+        # else:
+        #     grad_mu = egrad(egrad(mu))
+        #     if not return_std:
+        #         return grad_mu(X)
+        #     else:
+        #         return grad_mu(X), self.sigma_grad(X, nder=2)
 
     def sigma_grad(self, X, nder=1):
 
@@ -179,10 +191,11 @@ class GaussianProcess(BaseEstimator, RegressorMixin):
 
 
 class GaussianProcessError(BaseEstimator, RegressorMixin):
-    def __init__(self, jitter=1e-8, x_covariance=None, random_state=None):
+    def __init__(self, jitter=1e-8, x_covariance=None, random_state=None, n_iters=3):
         self.jitter = jitter
         self.x_covariance = x_covariance
         self.random_state = random_state
+        self.n_ters= n_iters
 
     def init_theta(self):
         """Initializes the hyperparameters."""
@@ -190,17 +203,7 @@ class GaussianProcessError(BaseEstimator, RegressorMixin):
         length_scale = np.log(np.ones(self.X_train_.shape[1]))
         noise_likelihood = np.log(0.01)
 
-        # Calculate the initial weights
-        K = self.rbf_covariance(self.X_train_, length_scale=np.exp(length_scale),
-                                signal_variance=np.exp(signal_variance))
-        K += np.exp(noise_likelihood) * np.eye(K.shape[0])
-        L = np.linalg.cholesky(K + self.jitter * np.eye(K.shape[0]))
-        init_weights = np.linalg.solve(L.T, np.linalg.solve(L, self.y_train_))
-        init_derivative = self.weights_grad(self.X_train_, init_weights,
-                                            np.exp(length_scale), np.exp(signal_variance))
-        init_derivative = init_derivative.ravel()
-
-        theta = np.hstack([signal_variance, noise_likelihood, length_scale, init_derivative])
+        theta = np.hstack([signal_variance, noise_likelihood, length_scale])
 
         return theta
 
@@ -217,13 +220,53 @@ class GaussianProcessError(BaseEstimator, RegressorMixin):
         # initial hyper-parameters
         theta0 = self.init_theta()
 
+        # Calculate the initial weights
+
+
+        self.derivative = np.ones(self.X_train_.shape)
+        print(self.derivative[:10, :10])
         # minimize the objective function
-        best_params = minimize(value_and_grad(self.log_marginal_likelihood), theta0, jac=True,
-                               method='L-BFGS-B')
+        optima = [minimize(value_and_grad(self.log_marginal_likelihood), theta0, jac=True,
+                               method='L-BFGS-B')]
+        fig, ax = plt.subplots()
+
+        ax.scatter(self.X_train_, self.derivative)
+
+        if self.n_ters is not None:
+
+            for iteration in range(self.n_ters):
+                print(theta0)
+                # Find the minimum
+                iparams = minimize(value_and_grad(self.log_marginal_likelihood), theta0, jac=True,
+                             method='L-BFGS-B')
+                print(iparams)
+                # extract best values
+                signal_variance, noise_likelihood, length_scale = \
+                    self._get_kernel_params(iparams.x)
+
+                # Recalculate the derivative
+                K = self.rbf_covariance(self.X_train_, length_scale=np.exp(length_scale),
+                                        signal_variance=np.exp(signal_variance))
+                K += np.exp(noise_likelihood) * np.eye(K.shape[0])
+                L = np.linalg.cholesky(K + self.jitter * np.eye(K.shape[0]))
+                iweights = np.linalg.solve(L.T, np.linalg.solve(L, self.y_train_))
+
+                self.derivative = self.weights_grad(self.X_train_, iweights,
+                                                    np.exp(length_scale), np.exp(signal_variance))
+                print(self.derivative[:10, :10])
+                ax.scatter(self.X_train_, self.derivative)
+                # make a new theta
+                theta0 = np.hstack([signal_variance, noise_likelihood, length_scale])
+        plt.show()
+        print()
+        print(optima)
+        lml_values = list(map(itemgetter(1), optima))
+        best_params = optima[np.argmin(lml_values)][0]
+
         print(best_params)
         # Gather hyper parameters
-        signal_variance, noise_likelihood, length_scale, init_weights = \
-            self._get_kernel_params(best_params.x)
+        signal_variance, noise_likelihood, length_scale = \
+            self._get_kernel_params(best_params)
 
         self.signal_variance = np.exp(signal_variance)
         self.noise_likelihood = np.exp(noise_likelihood)
@@ -254,16 +297,15 @@ class GaussianProcessError(BaseEstimator, RegressorMixin):
             y_train = y_train[:, np.newaxis]
 
         # Gather hyper parameters
-        signal_variance, noise_likelihood, length_scale, init_derivative = \
+        signal_variance, noise_likelihood, length_scale = \
             self._get_kernel_params(theta)
         signal_variance = np.exp(signal_variance)
         noise_likelihood = np.exp(noise_likelihood)
         length_scale = np.exp(length_scale)
 
         # Calculate the derivative
-        derivative = np.reshape(init_derivative, (self.X_train_.shape[0], self.X_train_.shape[1]))
-        derivative_term = np.diag(np.einsum("ij,ij->i", np.dot(derivative, self.x_covariance), derivative))
-
+        # derivative_term = np.diag(np.einsum("ij,ij->i", np.dot(self.derivative, self.x_covariance), self.derivative))
+        derivative_term = np.dot(self.derivative, np.dot(self.x_covariance, self.derivative.T))
         n_samples = x_train.shape[0]
 
         # Calculate derivative of the function
@@ -317,10 +359,9 @@ class GaussianProcessError(BaseEstimator, RegressorMixin):
         signal_variance = theta[0]
         noise_likelihood = theta[1] + self.jitter
         length_scale = theta[2:self.X_train_.shape[1] + 2]
-        init_weights = theta[self.X_train_.shape[1] + 1:-1]
         # print(length_scale.shape, init_weights.shape)
 
-        return signal_variance, noise_likelihood, length_scale, init_weights
+        return signal_variance, noise_likelihood, length_scale
 
     def rbf_covariance(self, X, y=None, signal_variance=1.0, length_scale=1.0):
 
@@ -418,8 +459,11 @@ def test_error():
     # Initialize GP Model
     gp_autograd = GaussianProcessError()
 
+
     # Fit GP Model
     gp_autograd.fit(X['train'], y['train'])
+    # Make Predictions
+    y_pred, y_var = gp_autograd.predict(X['test'], return_std=True)
     pass
 
 
